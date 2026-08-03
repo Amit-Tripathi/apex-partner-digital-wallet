@@ -303,19 +303,18 @@ public with sharing class DigitalWalletConsumptionService {
 
         h += '<table cellspacing="0" cellpadding="0" style="border-collapse:collapse;border:1px solid #d0d0d0;">';
         h += '<thead><tr style="background:#f2f4f7;">'
-           + th('Card') + th('Type') + th('Total Credits') + th('Consumed')
-           + th('Remaining') + th('% Consumed') + th('% Remaining') + th('Note')
+           + th('Card') + thR('Total Credits') + thR('Consumed')
+           + thR('Remaining') + thR('% Consumed') + thR('% Remaining')
            + '</tr></thead><tbody>';
         for (CardConsumption c : rows) {
+            Boolean unlimited = (c.note == 'UNLIMITED');
             h += '<tr style="border-top:1px solid #e5e5e5;">'
                + td(c.card)
-               + td(c.aggType)
-               + tdNum(c.totalCredits)
+               + (unlimited ? tdText('Unlimited') : tdNum(c.totalCredits))
                + tdNum(c.consumed)
-               + tdNum(c.remaining)
+               + (unlimited ? tdText('Unlimited') : tdNum(c.remaining))
                + tdPct(c.pctConsumed)
                + tdPct(c.pctRemaining)
-               + td(c.note)
                + '</tr>';
         }
         h += '</tbody></table>';
@@ -332,47 +331,122 @@ public with sharing class DigitalWalletConsumptionService {
         if (rows == null || rows.isEmpty()) {
             return s + 'No active entitlements were found for today.';
         }
-        s += 'Card | Type | Total Credits | Consumed | Remaining | % Consumed | % Remaining | Note\n';
-        s += '-----------------------------------------------------------------------------------\n';
+
+        // Build columns, then size each to its widest value so numbers line up.
+        List<String> headers = new List<String>{
+            'Card', 'Total Credits', 'Consumed', 'Remaining', '% Consumed', '% Remaining'
+        };
+        List<Boolean> rightAlign = new List<Boolean>{ false, true, true, true, true, true };
+        List<List<String>> cells = new List<List<String>>();
         for (CardConsumption c : rows) {
-            s += c.card + ' | ' + c.aggType
-               + ' | ' + fmtNum(c.totalCredits)
-               + ' | ' + fmtNum(c.consumed)
-               + ' | ' + fmtNum(c.remaining)
-               + ' | ' + (c.pctConsumed == null ? '' : c.pctConsumed + '%')
-               + ' | ' + (c.pctRemaining == null ? '' : c.pctRemaining + '%')
-               + ' | ' + c.note + '\n';
+            Boolean unlimited = (c.note == 'UNLIMITED');
+            cells.add(new List<String>{
+                c.card,
+                unlimited ? 'Unlimited' : fmtNum(c.totalCredits),
+                fmtNum(c.consumed),
+                unlimited ? 'Unlimited' : fmtNum(c.remaining),
+                (c.pctConsumed == null ? '' : c.pctConsumed + '%'),
+                (c.pctRemaining == null ? '' : c.pctRemaining + '%')
+            });
+        }
+
+        List<Integer> widths = new List<Integer>();
+        for (Integer col = 0; col < headers.size(); col++) {
+            Integer w = headers[col].length();
+            for (List<String> row : cells) {
+                if (row[col].length() > w) {
+                    w = row[col].length();
+                }
+            }
+            widths.add(w);
+        }
+
+        s += padRow(headers, widths, rightAlign) + '\n';
+        s += ('-').repeat(rowWidth(widths)) + '\n';
+        for (List<String> row : cells) {
+            s += padRow(row, widths, rightAlign) + '\n';
         }
         return s;
     }
 
+    // Joins one row of cells with 2-space gutters, padding each to its column width.
+    static String padRow(List<String> cellsRow, List<Integer> widths, List<Boolean> rightAlign) {
+        List<String> parts = new List<String>();
+        for (Integer i = 0; i < cellsRow.size(); i++) {
+            String v = (cellsRow[i] == null) ? '' : cellsRow[i];
+            parts.add(rightAlign[i] ? v.leftPad(widths[i]) : v.rightPad(widths[i]));
+        }
+        return String.join(parts, '  ');
+    }
+
+    // Total width of a padded row including the 2-space gutters between columns.
+    static Integer rowWidth(List<Integer> widths) {
+        Integer total = 0;
+        for (Integer w : widths) {
+            total += w;
+        }
+        return total + (widths.size() - 1) * 2;
+    }
+
     // ---- Small HTML cell helpers ----
+    // Left-aligned text header (the Card column).
     static String th(String label) {
-        return '<th style="padding:6px 12px;border-bottom:2px solid #d0d0d0;'
+        return '<th style="padding:8px 14px;border-bottom:2px solid #d0d0d0;'
              + 'font-weight:600;text-align:left;white-space:nowrap;">' + esc(label) + '</th>';
     }
+    // Right-aligned numeric header with a min-width so amount columns stay roomy.
+    static String thR(String label) {
+        return '<th style="padding:8px 18px;border-bottom:2px solid #d0d0d0;'
+             + 'font-weight:600;text-align:right;white-space:nowrap;min-width:120px;">'
+             + esc(label) + '</th>';
+    }
     static String td(String v) {
-        return '<td style="padding:6px 12px;white-space:nowrap;">' + esc(v) + '</td>';
+        return '<td style="padding:8px 14px;white-space:nowrap;">' + esc(v) + '</td>';
+    }
+    // Right-aligned free-text numeric cell (e.g. "Unlimited").
+    static String tdText(String v) {
+        return '<td style="padding:8px 18px;text-align:right;white-space:nowrap;min-width:120px;">'
+             + esc(v) + '</td>';
     }
     static String tdNum(Decimal v) {
-        return '<td style="padding:6px 12px;text-align:right;white-space:nowrap;">'
-             + esc(fmtNum(v)) + '</td>';
+        return '<td style="padding:8px 18px;text-align:right;white-space:nowrap;min-width:120px;'
+             + 'font-variant-numeric:tabular-nums;">' + esc(fmtNum(v)) + '</td>';
     }
-    // Formats an amount for display: whole numbers show without decimals; otherwise
-    // rounded to two places. Avoids raw Decimal precision artifacts from SUM.
+    static String tdPct(Decimal v) {
+        return '<td style="padding:8px 18px;text-align:right;white-space:nowrap;min-width:100px;'
+             + 'font-variant-numeric:tabular-nums;">' + (v == null ? '' : esc(v + '%')) + '</td>';
+    }
+    // Formats an amount for display: whole numbers show without decimals, otherwise
+    // rounded to two places, with thousands separators for readability. Avoids raw
+    // Decimal precision artifacts from SUM (e.g. "8296.90339..." or "36.000000").
     @TestVisible
     static String fmtNum(Decimal v) {
         if (v == null) {
             return '';
         }
         Decimal scaled = v.setScale(2, System.RoundingMode.HALF_UP);
-        return (scaled == Decimal.valueOf(scaled.longValue()))
-            ? String.valueOf(scaled.longValue())
-            : scaled.toPlainString();
-    }
-    static String tdPct(Decimal v) {
-        return '<td style="padding:6px 12px;text-align:right;white-space:nowrap;">'
-             + (v == null ? '' : esc(v + '%')) + '</td>';
+        Boolean isWhole = (scaled == Decimal.valueOf(scaled.longValue()));
+        Decimal absVal = scaled.abs();
+        Long intPart = absVal.longValue();
+
+        // Group the integer part into thousands.
+        String intStr = String.valueOf(intPart);
+        String grouped = '';
+        Integer count = 0;
+        for (Integer i = intStr.length() - 1; i >= 0; i--) {
+            grouped = intStr.substring(i, i + 1) + grouped;
+            count++;
+            if (Math.mod(count, 3) == 0 && i > 0) {
+                grouped = ',' + grouped;
+            }
+        }
+
+        String sign = (scaled < 0) ? '-' : '';
+        if (isWhole) {
+            return sign + grouped;
+        }
+        String frac = (absVal - intPart).setScale(2, System.RoundingMode.HALF_UP).toPlainString();
+        return sign + grouped + '.' + frac.substring(frac.indexOf('.') + 1);
     }
     static String esc(String v) {
         return (v == null) ? '' : v.escapeHtml4();

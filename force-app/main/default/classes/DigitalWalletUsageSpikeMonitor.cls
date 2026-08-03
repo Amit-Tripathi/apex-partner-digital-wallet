@@ -419,18 +419,36 @@ public with sharing class DigitalWalletUsageSpikeMonitor implements Schedulable 
         return '<td style="padding:6px 12px;text-align:right;white-space:nowrap;">'
              + esc(fmtNum(v)) + '</td>';
     }
-    // Formats an amount for display: whole numbers show without decimals; otherwise
-    // rounded to two places. Avoids raw Decimal precision artifacts from SUM (e.g.
-    // "8296.90339099999..." or "36.000000").
+    // Formats an amount for display: whole numbers show without decimals, otherwise
+    // rounded to two places, with thousands separators for readability. Avoids raw
+    // Decimal precision artifacts from SUM (e.g. "8296.90339..." or "36.000000").
     @TestVisible
     static String fmtNum(Decimal v) {
         if (v == null) {
             return '';
         }
         Decimal scaled = v.setScale(2, System.RoundingMode.HALF_UP);
-        return (scaled == Decimal.valueOf(scaled.longValue()))
-            ? String.valueOf(scaled.longValue())
-            : scaled.toPlainString();
+        Boolean isWhole = (scaled == Decimal.valueOf(scaled.longValue()));
+        Decimal absVal = scaled.abs();
+        Long intPart = absVal.longValue();
+
+        String intStr = String.valueOf(intPart);
+        String grouped = '';
+        Integer count = 0;
+        for (Integer i = intStr.length() - 1; i >= 0; i--) {
+            grouped = intStr.substring(i, i + 1) + grouped;
+            count++;
+            if (Math.mod(count, 3) == 0 && i > 0) {
+                grouped = ',' + grouped;
+            }
+        }
+
+        String sign = (scaled < 0) ? '-' : '';
+        if (isWhole) {
+            return sign + grouped;
+        }
+        String frac = (absVal - intPart).setScale(2, System.RoundingMode.HALF_UP).toPlainString();
+        return sign + grouped + '.' + frac.substring(frac.indexOf('.') + 1);
     }
     static String tdChange(Decimal pct) {
         String txt = (pct == null) ? 'new usage' : ('+' + pct + '%');

@@ -318,10 +318,43 @@ public class DigitalWalletConsumptionServiceTest {
         Assert.areEqual('', DigitalWalletConsumptionService.fmtNum(null));
         Assert.areEqual('36', DigitalWalletConsumptionService.fmtNum(36.000000),
             'Whole numbers should drop the decimal');
-        Assert.areEqual('8296.90', DigitalWalletConsumptionService.fmtNum(8296.903391),
-            'Precision artifacts should round to two places');
-        Assert.areEqual('14751.03', DigitalWalletConsumptionService.fmtNum(14751.034118),
-            'Two-decimal values are preserved');
+        Assert.areEqual('8,296.90', DigitalWalletConsumptionService.fmtNum(8296.903391),
+            'Precision artifacts should round to two places, with grouping');
+        Assert.areEqual('14,751.03', DigitalWalletConsumptionService.fmtNum(14751.034118),
+            'Two-decimal values are preserved with grouping');
+        Assert.areEqual('31,210,000', DigitalWalletConsumptionService.fmtNum(31210000),
+            'Large whole numbers get thousands separators');
+        Assert.areEqual('-1,234.50', DigitalWalletConsumptionService.fmtNum(-1234.5),
+            'Negative values keep the sign and grouping');
+    }
+
+    @IsTest
+    static void buildSummaryEmailFormatsAndDropsColumns() {
+        entRows = new List<SObject>{
+            ent('PlatformServicesCard', 31210000, T_START, T_END),
+            ent('PersonalizationCard', 1000000000000L, T_START, T_END)
+        };
+        injectConsumption(
+            new Map<String, String>{ 'PlatformServicesCard' => 'SUM', 'PersonalizationCard' => 'SUM' },
+            new Map<String, Decimal>{ 'PlatformServicesCard' => 5498657.48, 'PersonalizationCard' => 0 });
+        registerEnt();
+
+        Test.startTest();
+        Messaging.SingleEmailMessage msg =
+            DigitalWalletConsumptionService.buildSummaryEmail(new List<String>{ 'me@example.com' });
+        Test.stopTest();
+
+        String html = msg.getHtmlBody();
+        Assert.isFalse(html.contains('>Type<'), 'Type column header should be removed');
+        Assert.isFalse(html.contains('>Note<'), 'Note column header should be removed');
+        Assert.isTrue(html.contains('Unlimited'), 'Unlimited sentinel should render as text');
+        Assert.isTrue(html.contains('5,498,657.48'), 'Amounts should be grouped in HTML');
+        Assert.isTrue(html.contains('31,210,000'), 'Large whole amounts should be grouped');
+
+        String text = msg.getPlainTextBody();
+        Assert.isTrue(text.contains('Unlimited'), 'Unlimited sentinel should render in text');
+        Assert.isTrue(text.contains('5,498,657.48'), 'Amounts should be grouped in text');
+        Assert.isFalse(text.contains('| Note'), 'Text table should drop the Note column');
     }
 
     @IsTest

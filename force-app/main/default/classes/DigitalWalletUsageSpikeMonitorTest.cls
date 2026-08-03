@@ -283,8 +283,8 @@ public class DigitalWalletUsageSpikeMonitorTest {
         Assert.areEqual('', DigitalWalletUsageSpikeMonitor.fmtNum(null));
         Assert.areEqual('788', DigitalWalletUsageSpikeMonitor.fmtNum(788.000000),
             'Whole numbers should drop the decimal');
-        Assert.areEqual('14751.03', DigitalWalletUsageSpikeMonitor.fmtNum(14751.034118),
-            'Precision artifacts should round to two places');
+        Assert.areEqual('14,751.03', DigitalWalletUsageSpikeMonitor.fmtNum(14751.034118),
+            'Precision artifacts should round to two places, with grouping');
     }
 
     @IsTest
