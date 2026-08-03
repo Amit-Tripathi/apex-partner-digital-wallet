@@ -9,24 +9,39 @@
  *   - TenantDailyEntitlementConsumption__dlm (daily consumption)
  *
  * Design notes:
- *   - Uses TYPED static SOQL against the DMOs so tests can mock responses with the
- *     native SoqlStubProvider pattern (Test.createSoqlStub / Test.createStubQueryRow).
- *     DMO rows cannot be created via DML, so stubbing is the only way to test.
- *   - Query results are assigned to a List before iteration. SOQL for-loops are NOT
- *     supported for DMO SOQL stubs, so we deliberately avoid them.
- *   - Aggregation is done in Apex (not via GROUP BY) so the stub can return plain,
- *     typed DMO rows rather than un-mockable AggregateResult rows.
+ *   - Consumption is AGGREGATED AT THE SOURCE (Data 360), not pulled row-by-row.
+ *     Fetching every daily row for a card's term exceeds the DMO direct-assignment
+ *     row cap in production (a QueryException: "Inline query has too many rows for
+ *     direct assignment"). Instead:
+ *       * SUM cards -> a single SUM(unitsconsumed__c) aggregate per card/window.
+ *       * MAX cards -> the latest Production snapshot (ORDER BY date DESC LIMIT 1).
+ *       * Aggregation type is detected per card with a LIMIT 1 typed probe.
+ *   - The entitlements query stays a small typed direct-assignment query.
+ *   - DMO SOQL can only be mocked with typed rows via SoqlStubProvider; aggregate
+ *     (AggregateResult) queries can't be mocked. So the one aggregate call
+ *     (sumConsumedForCard) is fronted by a @TestVisible seam (sumConsumedOverride),
+ *     and the classification / snapshot / aggregation type probes use typed queries
+ *     that tests mock directly. Pure result-shaping lives in buildResults().
  *   - Ecosystem-safe: no hardcoded card names or dates. Each card's own active term
- *     window [StartDate, EndDate) is derived from its entitlements, and consumption is
- *     only counted inside that window. Aggregation type is detected per card:
- *       SUM -> cumulative drawdown (sum of unitsconsumed within the term).
- *       MAX -> point-in-time allocation, e.g. storage (latest Production snapshot).
+ *     window [StartDate, EndDate) is derived from its entitlements, and consumption
+ *     is only counted inside that window.
  */
 public with sharing class DigitalWalletConsumptionService {
 
     // Entitlements at/above this quantity are provisioned as effectively "unlimited".
     @TestVisible
     static final Decimal UNLIMITED_THRESHOLD = 1000000000000L;
+
+    // ---- Test seams ----
+    // Aggregate (AggregateResult) SOQL against DMOs can't be mocked with
+    // SoqlStubProvider, so tests inject the SUM result and/or the per-card
+    // aggregation type / consumed values through these overrides.
+    @TestVisible
+    static Map<String, Decimal> sumConsumedOverride;
+    @TestVisible
+    static Map<String, String> aggTypeOverride;
+    @TestVisible
+    static Map<String, Decimal> consumedOverride;
 
     /** Computed metrics for a single wallet card. */
     public class CardConsumption implements Comparable {
@@ -59,6 +74,8 @@ public with sharing class DigitalWalletConsumptionService {
         Map<String, Datetime> termStartByCard = new Map<String, Datetime>();
         Map<String, Datetime> termEndByCard   = new Map<String, Datetime>();
 
+        // Entitlements are few (one row per transaction), so a direct-assignment
+        // typed query is safe here and remains mockable via SoqlStubProvider.
         List<TenantEntitlementTransaction__dlm> ents = [
             SELECT entitlementcarddefdevlname__c, quantity__c, startdate__c, enddate__c
             FROM TenantEntitlementTransaction__dlm
@@ -87,65 +104,129 @@ public with sharing class DigitalWalletConsumptionService {
             }
         }
 
-        List<CardConsumption> results = new List<CardConsumption>();
         if (totalByCard.isEmpty()) {
-            return results;
+            return new List<CardConsumption>();
         }
 
-        // Overall window bounds the consumption query; per-card windows applied in Apex.
-        Datetime overallStart;
-        Datetime overallEnd;
+        // ---- Step 2: per-card aggregation type + consumed (aggregated at source) ----
+        Map<String, String>  aggTypeByCard  = new Map<String, String>();
+        Map<String, Decimal> consumedByCard = new Map<String, Decimal>();
         for (String card : totalByCard.keySet()) {
-            Datetime s  = termStartByCard.get(card);
-            Datetime en = termEndByCard.get(card);
-            if (s != null && (overallStart == null || s < overallStart)) {
-                overallStart = s;
-            }
-            if (en != null && (overallEnd == null || en > overallEnd)) {
-                overallEnd = en;
-            }
-        }
-
-        // ---- Step 2: consumption rows for active cards within the overall window ----
-        Set<String> cards = totalByCard.keySet();
-        Map<String, List<TenantDailyEntitlementConsumption__dlm>> rowsByCard =
-            new Map<String, List<TenantDailyEntitlementConsumption__dlm>>();
-
-        List<TenantDailyEntitlementConsumption__dlm> cons = [
-            SELECT carddefinitiondevelopername__c, usageaggregationtype__c, unitsconsumed__c,
-                   utilizationdate__c, Usage_Business_Environment_Type__c
-            FROM TenantDailyEntitlementConsumption__dlm
-            WHERE carddefinitiondevelopername__c IN :cards
-              AND utilizationdate__c >= :overallStart
-              AND utilizationdate__c <  :overallEnd
-        ];
-        for (TenantDailyEntitlementConsumption__dlm c : cons) {
-            String card = c.carddefinitiondevelopername__c;
-            if (!rowsByCard.containsKey(card)) {
-                rowsByCard.put(card, new List<TenantDailyEntitlementConsumption__dlm>());
-            }
-            rowsByCard.get(card).add(c);
-        }
-
-        // ---- Step 3: per-card consumed, honoring each card's own window + agg type ----
-        for (String card : totalByCard.keySet()) {
-            Decimal  total  = totalByCard.get(card);
             Datetime tStart = termStartByCard.get(card);
             Datetime tEnd   = termEndByCard.get(card);
-            List<TenantDailyEntitlementConsumption__dlm> rows = rowsByCard.containsKey(card)
-                ? rowsByCard.get(card)
-                : new List<TenantDailyEntitlementConsumption__dlm>();
+            String aggType  = aggTypeForCard(card);
+            aggTypeByCard.put(card, aggType);
+            consumedByCard.put(card, consumedForCard(card, aggType, tStart, tEnd));
+        }
 
-            String aggType = detectAggType(rows);
-            Decimal consumed = (aggType == 'MAX')
-                ? maxSnapshot(rows, tStart, tEnd)
-                : sumConsumed(rows, tStart, tEnd);
+        // ---- Step 3: shape the per-card results ----
+        return buildResults(totalByCard, termStartByCard, termEndByCard, aggTypeByCard, consumedByCard);
+    }
+
+    /**
+     * Classifies a card as MAX (point-in-time snapshot) or SUM (drawdown). A card
+     * is provisioned as one type, so a single MAX probe row is enough to classify.
+     * Typed query -> mockable via SoqlStubProvider.
+     */
+    @TestVisible
+    static String aggTypeForCard(String card) {
+        if (aggTypeOverride != null && aggTypeOverride.containsKey(card)) {
+            return aggTypeOverride.get(card);
+        }
+        List<TenantDailyEntitlementConsumption__dlm> maxProbe = [
+            SELECT usageaggregationtype__c
+            FROM TenantDailyEntitlementConsumption__dlm
+            WHERE carddefinitiondevelopername__c = :card
+              AND usageaggregationtype__c = 'MAX'
+            LIMIT 1
+        ];
+        return maxProbe.isEmpty() ? 'SUM' : 'MAX';
+    }
+
+    /** Dispatches to the SUM or MAX consumption strategy for a card. */
+    @TestVisible
+    static Decimal consumedForCard(String card, String aggType, Datetime tStart, Datetime tEnd) {
+        if (consumedOverride != null && consumedOverride.containsKey(card)) {
+            return consumedOverride.get(card);
+        }
+        return (aggType == 'MAX')
+            ? maxSnapshotForCard(card, tStart, tEnd)
+            : sumConsumedForCard(card, tStart, tEnd);
+    }
+
+    /**
+     * Cumulative drawdown: SUM(unitsconsumed__c) within the term, aggregated at the
+     * source so the full daily row set is never materialized. The aggregate result
+     * can't be mocked, so tests inject the value via sumConsumedOverride.
+     */
+    @TestVisible
+    static Decimal sumConsumedForCard(String card, Datetime tStart, Datetime tEnd) {
+        if (sumConsumedOverride != null && sumConsumedOverride.containsKey(card)) {
+            return sumConsumedOverride.get(card);
+        }
+        AggregateResult[] rs = [
+            SELECT SUM(unitsconsumed__c) consumed
+            FROM TenantDailyEntitlementConsumption__dlm
+            WHERE carddefinitiondevelopername__c = :card
+              AND utilizationdate__c >= :tStart
+              AND utilizationdate__c <  :tEnd
+        ];
+        Object v = rs.isEmpty() ? null : rs[0].get('consumed');
+        return (v == null) ? 0 : Decimal.valueOf(String.valueOf(v));
+    }
+
+    /**
+     * Point-in-time allocation: the latest Production snapshot within the term,
+     * falling back to the latest reading in any environment. Both are single-row
+     * typed queries -> mockable via SoqlStubProvider.
+     */
+    @TestVisible
+    static Decimal maxSnapshotForCard(String card, Datetime tStart, Datetime tEnd) {
+        List<TenantDailyEntitlementConsumption__dlm> snap = [
+            SELECT unitsconsumed__c
+            FROM TenantDailyEntitlementConsumption__dlm
+            WHERE carddefinitiondevelopername__c = :card
+              AND Usage_Business_Environment_Type__c = 'Production'
+              AND utilizationdate__c >= :tStart
+              AND utilizationdate__c <  :tEnd
+            ORDER BY utilizationdate__c DESC
+            LIMIT 1
+        ];
+        if (snap.isEmpty()) {
+            snap = [
+                SELECT unitsconsumed__c
+                FROM TenantDailyEntitlementConsumption__dlm
+                WHERE carddefinitiondevelopername__c = :card
+                  AND utilizationdate__c >= :tStart
+                  AND utilizationdate__c <  :tEnd
+                ORDER BY utilizationdate__c DESC
+                LIMIT 1
+            ];
+        }
+        return (snap.isEmpty() || snap[0].unitsconsumed__c == null)
+            ? 0 : Decimal.valueOf(String.valueOf(snap[0].unitsconsumed__c));
+    }
+
+    /** Shapes the per-card maps into sorted CardConsumption results. Pure logic. */
+    @TestVisible
+    static List<CardConsumption> buildResults(
+            Map<String, Decimal>  totalByCard,
+            Map<String, Datetime> termStartByCard,
+            Map<String, Datetime> termEndByCard,
+            Map<String, String>   aggTypeByCard,
+            Map<String, Decimal>  consumedByCard) {
+        List<CardConsumption> results = new List<CardConsumption>();
+        for (String card : totalByCard.keySet()) {
+            Decimal total = totalByCard.get(card);
+            Decimal consumed = (consumedByCard.containsKey(card) && consumedByCard.get(card) != null)
+                ? consumedByCard.get(card) : 0;
 
             CardConsumption cc = new CardConsumption();
             cc.card         = card;
-            cc.aggType      = aggType;
-            cc.termStart    = tStart;
-            cc.termEnd      = tEnd;
+            cc.aggType      = (aggTypeByCard.containsKey(card) && aggTypeByCard.get(card) != null)
+                ? aggTypeByCard.get(card) : 'SUM';
+            cc.termStart    = termStartByCard.get(card);
+            cc.termEnd      = termEndByCard.get(card);
             cc.totalCredits = total;
             cc.consumed     = consumed;
             cc.remaining    = total - consumed;
@@ -156,82 +237,6 @@ public with sharing class DigitalWalletConsumptionService {
         }
         results.sort();
         return results;
-    }
-
-    /** Detects the aggregation type for a card. Prefers MAX when a card has mixed types. */
-    @TestVisible
-    static String detectAggType(List<TenantDailyEntitlementConsumption__dlm> rows) {
-        String aggType = 'SUM';
-        Boolean found = false;
-        for (TenantDailyEntitlementConsumption__dlm r : rows) {
-            String t = r.usageaggregationtype__c;
-            if (t == 'MAX') {
-                return 'MAX';
-            }
-            if (t != null && !found) {
-                aggType = t;
-                found = true;
-            }
-        }
-        return aggType;
-    }
-
-    /** True if d is inside the half-open window [tStart, tEnd). Null-safe. */
-    @TestVisible
-    static Boolean inWindow(Datetime d, Datetime tStart, Datetime tEnd) {
-        if (d == null) {
-            return false;
-        }
-        if (tStart != null && d < tStart) {
-            return false;
-        }
-        if (tEnd != null && d >= tEnd) {
-            return false;
-        }
-        return true;
-    }
-
-    /** Cumulative drawdown: sum of unitsconsumed within the term window. */
-    @TestVisible
-    static Decimal sumConsumed(List<TenantDailyEntitlementConsumption__dlm> rows, Datetime tStart, Datetime tEnd) {
-        Decimal sum = 0;
-        for (TenantDailyEntitlementConsumption__dlm r : rows) {
-            if (!inWindow(r.utilizationdate__c, tStart, tEnd)) {
-                continue;
-            }
-            if (r.unitsconsumed__c != null) {
-                sum += r.unitsconsumed__c;
-            }
-        }
-        return sum;
-    }
-
-    /**
-     * Point-in-time allocation: latest snapshot within the term window.
-     * Prefers the most recent Production reading; falls back to the most recent
-     * reading in any environment.
-     */
-    @TestVisible
-    static Decimal maxSnapshot(List<TenantDailyEntitlementConsumption__dlm> rows, Datetime tStart, Datetime tEnd) {
-        TenantDailyEntitlementConsumption__dlm bestProd;
-        TenantDailyEntitlementConsumption__dlm bestAny;
-        for (TenantDailyEntitlementConsumption__dlm r : rows) {
-            if (!inWindow(r.utilizationdate__c, tStart, tEnd)) {
-                continue;
-            }
-            if (bestAny == null || r.utilizationdate__c > bestAny.utilizationdate__c) {
-                bestAny = r;
-            }
-            if (r.Usage_Business_Environment_Type__c == 'Production' &&
-                (bestProd == null || r.utilizationdate__c > bestProd.utilizationdate__c)) {
-                bestProd = r;
-            }
-        }
-        TenantDailyEntitlementConsumption__dlm chosen = (bestProd != null) ? bestProd : bestAny;
-        if (chosen == null || chosen.unitsconsumed__c == null) {
-            return 0;
-        }
-        return chosen.unitsconsumed__c;
     }
 
     /** Emits the per-card summary to debug logs. Used by the scheduler. */
@@ -331,9 +336,9 @@ public with sharing class DigitalWalletConsumptionService {
         s += '-----------------------------------------------------------------------------------\n';
         for (CardConsumption c : rows) {
             s += c.card + ' | ' + c.aggType
-               + ' | ' + c.totalCredits.toPlainString()
-               + ' | ' + c.consumed.toPlainString()
-               + ' | ' + c.remaining.toPlainString()
+               + ' | ' + fmtNum(c.totalCredits)
+               + ' | ' + fmtNum(c.consumed)
+               + ' | ' + fmtNum(c.remaining)
                + ' | ' + (c.pctConsumed == null ? '' : c.pctConsumed + '%')
                + ' | ' + (c.pctRemaining == null ? '' : c.pctRemaining + '%')
                + ' | ' + c.note + '\n';
@@ -351,7 +356,19 @@ public with sharing class DigitalWalletConsumptionService {
     }
     static String tdNum(Decimal v) {
         return '<td style="padding:6px 12px;text-align:right;white-space:nowrap;">'
-             + (v == null ? '' : esc(v.toPlainString())) + '</td>';
+             + esc(fmtNum(v)) + '</td>';
+    }
+    // Formats an amount for display: whole numbers show without decimals; otherwise
+    // rounded to two places. Avoids raw Decimal precision artifacts from SUM.
+    @TestVisible
+    static String fmtNum(Decimal v) {
+        if (v == null) {
+            return '';
+        }
+        Decimal scaled = v.setScale(2, System.RoundingMode.HALF_UP);
+        return (scaled == Decimal.valueOf(scaled.longValue()))
+            ? String.valueOf(scaled.longValue())
+            : scaled.toPlainString();
     }
     static String tdPct(Decimal v) {
         return '<td style="padding:6px 12px;text-align:right;white-space:nowrap;">'

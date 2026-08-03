@@ -2,22 +2,24 @@
  * DigitalWalletUsageSpikeMonitor
  *
  * Standalone, self-contained daily usage-spike detector for Digital Wallet cards.
- * A "spike" is a day-over-day jump: the latest day's usage for a card is more than
- * `thresholdPercent` higher than the previous day's usage. When one or more spikes
- * are found, a single alert email is sent; if none are found, no email is sent.
+ * A "spike" is when the latest day's usage for a card is more than `thresholdPercent`
+ * above the trailing MEDIAN of the preceding `baselineDays` days. A trailing median
+ * (rather than the single prior day) is used so a rebound off an anomalously low day,
+ * or a lone outlier day, doesn't trigger a false alarm. When one or more spikes are
+ * found, a single alert email is sent; if none are found, no email is sent.
  *
  * Design notes:
  *   - Deliberately independent of DigitalWalletConsumptionService: it runs its own
- *     TYPED static SOQL against the Data 360 DMOs and implements its own term-window
- *     check, so the existing service/scheduler classes are left untouched.
- *   - Uses TYPED static SOQL so tests can mock responses with the native
- *     SoqlStubProvider pattern (Test.createSoqlStub / Test.createStubQueryRow); DMO
- *     rows cannot be created via DML.
- *   - Query results are assigned to a List before iteration. SOQL for-loops are NOT
- *     supported for DMO SOQL stubs, so we avoid them.
+ *     TYPED entitlements query against the Data 360 DMOs and its own per-card
+ *     consumption lookup, so the existing service/scheduler classes are untouched.
+ *   - Daily usage is AGGREGATED AT THE SOURCE (Data 360). Pulling every daily row
+ *     exceeds the DMO direct-assignment row cap in production, so recentDailyUsage()
+ *     asks Data 360 for just the two most recent days' summed usage per card.
+ *   - Aggregate (AggregateResult) DMO queries can't be mocked with SoqlStubProvider,
+ *     so recentDailyUsage() is fronted by a @TestVisible seam (usageOverride) and the
+ *     pure day-over-day comparison lives in spikeFor(), which tests drive directly.
  *   - Scope: SUM-type cards (daily incremental drawdown). MAX/snapshot cards are
- *     skipped because their daily rows are cumulative point-in-time snapshots, not
- *     daily usage.
+ *     excluded in the query (their daily rows are cumulative snapshots, not usage).
  *
  * Schedule the daily check (07:00 America/New_York given the org's Tahiti timezone):
  *   DigitalWalletUsageSpikeMonitor.scheduleDaily();
@@ -26,10 +28,15 @@
  */
 public with sharing class DigitalWalletUsageSpikeMonitor implements Schedulable {
 
-    // Day-over-day spike threshold, in percent. Change here to tune sensitivity,
-    // or override per call via detectSpikes(Decimal) / emailSpikeAlert(..., Decimal).
+    // Spike threshold, in percent: how far the latest day must exceed the trailing
+    // median to be flagged. Change here to tune sensitivity, or override per call via
+    // detectSpikes(Decimal) / emailSpikeAlert(..., Decimal).
     @TestVisible
     public static Decimal thresholdPercent = 10;
+
+    // Number of days preceding the latest day that form the trailing-median baseline.
+    @TestVisible
+    public static Integer baselineDays = 7;
 
     // Default daily cron: 01:00 org time (Tahiti, GMT-10) == 07:00 US Eastern (EDT).
     @TestVisible
@@ -39,20 +46,25 @@ public with sharing class DigitalWalletUsageSpikeMonitor implements Schedulable 
     @TestVisible
     List<String> recipients;
 
+    // Test seam: aggregate DMO SOQL can't be mocked, so tests inject per-card
+    // daily usage (card -> (day -> summed units)) here instead.
+    @TestVisible
+    static Map<String, Map<Date, Decimal>> usageOverride;
+
     public DigitalWalletUsageSpikeMonitor() {}
 
     public DigitalWalletUsageSpikeMonitor(List<String> recipients) {
         this.recipients = recipients;
     }
 
-    /** A single detected day-over-day usage spike for one card. */
+    /** A single detected usage spike for one card (latest day vs trailing median). */
     public class UsageSpike implements Comparable {
         public String  card;
-        public Date    previousDate;
-        public Decimal previousUsage;
+        public Integer baselineDayCount; // number of prior days in the baseline
+        public Decimal baselineUsage;    // trailing median usage of the baseline days
         public Date    latestDate;
         public Decimal latestUsage;
-        public Decimal changePct;      // null => "new usage" (previous day was zero)
+        public Decimal changePct;        // null => "new usage" (baseline median was zero)
 
         /** Sort by biggest spike first; null changePct (new usage) sorts to the top. */
         public Integer compareTo(Object o) {
@@ -83,8 +95,10 @@ public with sharing class DigitalWalletUsageSpikeMonitor implements Schedulable 
     }
 
     /**
-     * Detects day-over-day usage spikes for every active SUM-type card.
-     * @param thresholdPct minimum percent increase (exclusive) to count as a spike.
+     * Detects usage spikes for every active SUM-type card by comparing each card's
+     * latest day of usage against the trailing median of its preceding baselineDays.
+     * @param thresholdPct minimum percent above the trailing median (exclusive) to
+     *                     count as a spike.
      * @return list of UsageSpike sorted by largest spike first.
      */
     public static List<UsageSpike> detectSpikes(Decimal thresholdPct) {
@@ -125,108 +139,133 @@ public with sharing class DigitalWalletUsageSpikeMonitor implements Schedulable 
         cards.addAll(termStartByCard.keySet());
         cards.addAll(termEndByCard.keySet());
 
-        // Overall window bounds the consumption query; per-card windows applied in Apex.
-        Datetime overallStart;
-        Datetime overallEnd;
+        // ---- Step 2: per-card recent daily usage (aggregated at source) ----
         for (String card : cards) {
-            Datetime s  = termStartByCard.get(card);
-            Datetime en = termEndByCard.get(card);
-            if (s != null && (overallStart == null || s < overallStart)) {
-                overallStart = s;
+            Map<Date, Decimal> byDay = recentDailyUsage(card, termStartByCard.get(card), termEndByCard.get(card));
+            UsageSpike sp = spikeFor(card, byDay, thresholdPct);
+            if (sp != null) {
+                spikes.add(sp);
             }
-            if (en != null && (overallEnd == null || en > overallEnd)) {
-                overallEnd = en;
-            }
-        }
-
-        // ---- Step 2: daily consumption rows for those cards within the window ----
-        // card -> (day -> summed unitsconsumed)
-        Map<String, Map<Date, Decimal>> usageByCardDay = new Map<String, Map<Date, Decimal>>();
-
-        List<TenantDailyEntitlementConsumption__dlm> cons = [
-            SELECT carddefinitiondevelopername__c, usageaggregationtype__c,
-                   unitsconsumed__c, utilizationdate__c
-            FROM TenantDailyEntitlementConsumption__dlm
-            WHERE carddefinitiondevelopername__c IN :cards
-              AND utilizationdate__c >= :overallStart
-              AND utilizationdate__c <  :overallEnd
-        ];
-        for (TenantDailyEntitlementConsumption__dlm c : cons) {
-            // SUM-type only: skip point-in-time snapshot cards.
-            if (c.usageaggregationtype__c == 'MAX') {
-                continue;
-            }
-            String card = c.carddefinitiondevelopername__c;
-            if (card == null || c.utilizationdate__c == null) {
-                continue;
-            }
-            if (!inWindow(c.utilizationdate__c, termStartByCard.get(card), termEndByCard.get(card))) {
-                continue;
-            }
-            Date day = c.utilizationdate__c.dateGmt();
-            Decimal units = (c.unitsconsumed__c == null) ? 0 : c.unitsconsumed__c;
-
-            if (!usageByCardDay.containsKey(card)) {
-                usageByCardDay.put(card, new Map<Date, Decimal>());
-            }
-            Map<Date, Decimal> byDay = usageByCardDay.get(card);
-            Decimal running = byDay.containsKey(day) ? byDay.get(day) : 0;
-            byDay.put(day, running + units);
-        }
-
-        // ---- Step 3: per-card day-over-day comparison of the two latest days ----
-        for (String card : usageByCardDay.keySet()) {
-            Map<Date, Decimal> byDay = usageByCardDay.get(card);
-            List<Date> days = new List<Date>(byDay.keySet());
-            if (days.size() < 2) {
-                continue;
-            }
-            days.sort(); // ascending; take the last two
-            Date prevDay   = days[days.size() - 2];
-            Date latestDay = days[days.size() - 1];
-            Decimal prevUsage   = byDay.get(prevDay);
-            Decimal latestUsage = byDay.get(latestDay);
-
-            Decimal changePct;
-            Boolean isSpike;
-            if (prevUsage == null || prevUsage == 0) {
-                // Zero baseline with any positive usage today => "new usage" spike.
-                isSpike   = (latestUsage != null && latestUsage > 0);
-                changePct = null;
-            } else {
-                changePct = ((latestUsage - prevUsage) / prevUsage * 100).setScale(2);
-                isSpike   = (changePct > thresholdPct);
-            }
-
-            if (!isSpike) {
-                continue;
-            }
-            UsageSpike sp    = new UsageSpike();
-            sp.card          = card;
-            sp.previousDate  = prevDay;
-            sp.previousUsage = prevUsage;
-            sp.latestDate    = latestDay;
-            sp.latestUsage   = latestUsage;
-            sp.changePct     = changePct;
-            spikes.add(sp);
         }
         spikes.sort();
         return spikes;
     }
 
-    /** True if d is inside the half-open window [tStart, tEnd). Null-safe. */
+    // Upper bound on daily rows fetched per card. We only need the two most recent
+    // days; a small ordered page keeps us far under the DMO direct-assignment row
+    // cap while remaining a typed (mockable) query. Daily data has only a handful of
+    // environment rows per day, so this comfortably spans many days of usage.
     @TestVisible
-    static Boolean inWindow(Datetime d, Datetime tStart, Datetime tEnd) {
-        if (d == null) {
-            return false;
+    static Integer recentRowLimit = 200;
+
+    /**
+     * Returns the most recent (baselineDays + 1) days of usage for a SUM-type card,
+     * summed per day and scoped to the card's term window: the latest day plus the
+     * trailing baseline window. Uses a bounded, date-descending typed query (not the
+     * full daily row set, which exceeds the DMO direct-assignment row cap) and buckets
+     * by day in Apex. Typed -> mockable via SoqlStubProvider; tests may also inject
+     * via usageOverride.
+     */
+    @TestVisible
+    static Map<Date, Decimal> recentDailyUsage(String card, Datetime tStart, Datetime tEnd) {
+        if (usageOverride != null && usageOverride.containsKey(card)) {
+            return usageOverride.get(card);
         }
-        if (tStart != null && d < tStart) {
-            return false;
+        List<TenantDailyEntitlementConsumption__dlm> rows = [
+            SELECT unitsconsumed__c, utilizationdate__c
+            FROM TenantDailyEntitlementConsumption__dlm
+            WHERE carddefinitiondevelopername__c = :card
+              AND usageaggregationtype__c != 'MAX'
+              AND utilizationdate__c >= :tStart
+              AND utilizationdate__c <  :tEnd
+            ORDER BY utilizationdate__c DESC
+            LIMIT :recentRowLimit
+        ];
+        Map<Date, Decimal> byDay = new Map<Date, Decimal>();
+        for (TenantDailyEntitlementConsumption__dlm r : rows) {
+            if (r.utilizationdate__c == null) {
+                continue;
+            }
+            Date day = r.utilizationdate__c.dateGmt();
+            Decimal units = (r.unitsconsumed__c == null) ? 0 : r.unitsconsumed__c;
+            byDay.put(day, (byDay.containsKey(day) ? byDay.get(day) : 0) + units);
         }
-        if (tEnd != null && d >= tEnd) {
-            return false;
+        // Keep the latest day plus the trailing baseline window.
+        Integer keep = baselineDays + 1;
+        if (byDay.size() <= keep) {
+            return byDay;
         }
-        return true;
+        List<Date> days = new List<Date>(byDay.keySet());
+        days.sort();
+        Map<Date, Decimal> recent = new Map<Date, Decimal>();
+        for (Integer i = days.size() - keep; i < days.size(); i++) {
+            recent.put(days[i], byDay.get(days[i]));
+        }
+        return recent;
+    }
+
+    /**
+     * Pure comparison for a single card: latest day vs the trailing MEDIAN of the
+     * preceding days present in byDay. Returns a UsageSpike when the latest day is
+     * more than thresholdPct above that median (or when usage appears against a zero
+     * baseline). Returns null when there is no spike or fewer than two days of data.
+     * A median is used so a single anomalous baseline day (a dip or an outlier)
+     * doesn't distort the comparison.
+     */
+    @TestVisible
+    static UsageSpike spikeFor(String card, Map<Date, Decimal> byDay, Decimal thresholdPct) {
+        if (byDay == null || byDay.size() < 2) {
+            return null;
+        }
+        List<Date> days = new List<Date>(byDay.keySet());
+        days.sort(); // ascending; the last entry is the latest day
+        Date latestDay = days[days.size() - 1];
+        Decimal latestUsage = byDay.get(latestDay);
+
+        List<Decimal> baselineVals = new List<Decimal>();
+        for (Integer i = 0; i < days.size() - 1; i++) {
+            Decimal v = byDay.get(days[i]);
+            baselineVals.add(v == null ? 0 : v);
+        }
+        Decimal baseline = median(baselineVals);
+
+        Decimal changePct;
+        Boolean isSpike;
+        if (baseline == null || baseline == 0) {
+            // Zero (or empty) baseline with any positive usage today => "new usage".
+            isSpike   = (latestUsage != null && latestUsage > 0);
+            changePct = null;
+        } else {
+            changePct = ((latestUsage - baseline) / baseline * 100).setScale(2);
+            isSpike   = (changePct > thresholdPct);
+        }
+
+        if (!isSpike) {
+            return null;
+        }
+        UsageSpike sp       = new UsageSpike();
+        sp.card             = card;
+        sp.baselineDayCount = baselineVals.size();
+        sp.baselineUsage    = baseline;
+        sp.latestDate       = latestDay;
+        sp.latestUsage      = latestUsage;
+        sp.changePct        = changePct;
+        return sp;
+    }
+
+    /** Median of a list of Decimals (ascending). Returns null for an empty list. */
+    @TestVisible
+    static Decimal median(List<Decimal> values) {
+        if (values == null || values.isEmpty()) {
+            return null;
+        }
+        List<Decimal> xs = new List<Decimal>(values);
+        xs.sort();
+        Integer n = xs.size();
+        if (Math.mod(n, 2) == 1) {
+            return xs[n / 2];
+        }
+        return (xs[n / 2 - 1] + xs[n / 2]) / 2;
     }
 
     // =========================================================================
@@ -284,7 +323,8 @@ public with sharing class DigitalWalletUsageSpikeMonitor implements Schedulable 
         String h = '<div style="font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#0b0b0b;">';
         h += '<h2 style="margin:0 0 4px;">Digital Wallet Usage Spike Alert</h2>';
         h += '<p style="margin:0 0 12px;color:#555;">' + esc(Date.today().format())
-           + ' &middot; day-over-day increase greater than ' + esc(String.valueOf(thresholdPct)) + '%</p>';
+           + ' &middot; latest day more than ' + esc(String.valueOf(thresholdPct))
+           + '% above the trailing ' + esc(String.valueOf(baselineDays)) + '-day median</p>';
 
         if (spikes == null || spikes.isEmpty()) {
             return h + '<p>No usage spikes were detected.</p></div>';
@@ -292,23 +332,24 @@ public with sharing class DigitalWalletUsageSpikeMonitor implements Schedulable 
 
         h += '<table cellspacing="0" cellpadding="0" style="border-collapse:collapse;border:1px solid #d0d0d0;">';
         h += '<thead><tr style="background:#fdecea;">'
-           + th('Card') + th('Previous Day') + th('Previous Usage')
-           + th('Latest Day') + th('Latest Usage') + th('Change')
+           + th('Card') + th('Latest Day') + th('Latest Usage')
+           + th('Baseline (median)') + th('Baseline Days') + th('Change vs Median')
            + '</tr></thead><tbody>';
         for (UsageSpike s : spikes) {
             h += '<tr style="border-top:1px solid #e5e5e5;">'
                + td(s.card)
-               + td(fmtDate(s.previousDate))
-               + tdNum(s.previousUsage)
                + td(fmtDate(s.latestDate))
                + tdNum(s.latestUsage)
+               + tdNum(s.baselineUsage)
+               + td(String.valueOf(s.baselineDayCount))
                + tdChange(s.changePct)
                + '</tr>';
         }
         h += '</tbody></table>';
         h += '<p style="margin:12px 0 0;color:#888;font-size:11px;">'
-           + 'Generated by DigitalWalletUsageSpikeMonitor. Compares the two most recent days with '
-           + 'usage per card (SUM-type cards only); &quot;new usage&quot; means the prior day was zero.</p>';
+           + 'Generated by DigitalWalletUsageSpikeMonitor. Compares each card&#39;s latest day of usage '
+           + 'against the trailing median of up to ' + esc(String.valueOf(baselineDays)) + ' prior days '
+           + '(SUM-type cards only); &quot;new usage&quot; means the baseline median was zero.</p>';
         return h + '</div>';
     }
 
@@ -316,18 +357,19 @@ public with sharing class DigitalWalletUsageSpikeMonitor implements Schedulable 
     @TestVisible
     static String buildSpikeTextBody(List<UsageSpike> spikes, Decimal thresholdPct) {
         String s = 'Digital Wallet Usage Spike Alert - ' + Date.today().format() + '\n'
-                 + 'Day-over-day increase greater than ' + thresholdPct + '%\n\n';
+                 + 'Latest day greater than ' + thresholdPct + '% above the trailing '
+                 + baselineDays + '-day median\n\n';
         if (spikes == null || spikes.isEmpty()) {
             return s + 'No usage spikes were detected.';
         }
-        s += 'Card | Previous Day | Previous Usage | Latest Day | Latest Usage | Change\n';
-        s += '---------------------------------------------------------------------------\n';
+        s += 'Card | Latest Day | Latest Usage | Baseline (median) | Baseline Days | Change vs Median\n';
+        s += '----------------------------------------------------------------------------------------\n';
         for (UsageSpike sp : spikes) {
             s += sp.card
-               + ' | ' + fmtDate(sp.previousDate)
-               + ' | ' + (sp.previousUsage == null ? '' : sp.previousUsage.toPlainString())
                + ' | ' + fmtDate(sp.latestDate)
-               + ' | ' + (sp.latestUsage == null ? '' : sp.latestUsage.toPlainString())
+               + ' | ' + fmtNum(sp.latestUsage)
+               + ' | ' + fmtNum(sp.baselineUsage)
+               + ' | ' + sp.baselineDayCount
                + ' | ' + (sp.changePct == null ? 'new usage' : sp.changePct + '%')
                + '\n';
         }
@@ -375,7 +417,20 @@ public with sharing class DigitalWalletUsageSpikeMonitor implements Schedulable 
     }
     static String tdNum(Decimal v) {
         return '<td style="padding:6px 12px;text-align:right;white-space:nowrap;">'
-             + (v == null ? '' : esc(v.toPlainString())) + '</td>';
+             + esc(fmtNum(v)) + '</td>';
+    }
+    // Formats an amount for display: whole numbers show without decimals; otherwise
+    // rounded to two places. Avoids raw Decimal precision artifacts from SUM (e.g.
+    // "8296.90339099999..." or "36.000000").
+    @TestVisible
+    static String fmtNum(Decimal v) {
+        if (v == null) {
+            return '';
+        }
+        Decimal scaled = v.setScale(2, System.RoundingMode.HALF_UP);
+        return (scaled == Decimal.valueOf(scaled.longValue()))
+            ? String.valueOf(scaled.longValue())
+            : scaled.toPlainString();
     }
     static String tdChange(Decimal pct) {
         String txt = (pct == null) ? 'new usage' : ('+' + pct + '%');
