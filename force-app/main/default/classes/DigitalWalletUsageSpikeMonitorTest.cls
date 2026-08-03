@@ -185,6 +185,28 @@ public class DigitalWalletUsageSpikeMonitorTest {
     }
 
     @IsTest
+    static void executeEnqueuesQueueable() {
+        seedTwoDayUsage(1000, 1200); // +20% => spike => alert attempted
+        registerStubs();
+
+        Test.startTest();
+        // execute() only enqueues; the enqueued Queueable runs at stopTest() and
+        // exercises emailSpikeAlert() -> detectSpikes() against the stubs.
+        new DigitalWalletUsageSpikeMonitor(new List<String>{ 'me@example.com' }).execute(null);
+        Test.stopTest();
+
+        List<AsyncApexJob> jobs = [
+            SELECT Status, ApexClass.Name
+            FROM AsyncApexJob
+            WHERE JobType = 'Queueable'
+              AND ApexClass.Name = 'DigitalWalletUsageSpikeQueueable'
+        ];
+        Assert.areEqual(1, jobs.size(), 'execute() should enqueue the spike Queueable');
+        Assert.areEqual('Completed', jobs[0].Status,
+            'The enqueued Queueable should run to completion against the stubs');
+    }
+
+    @IsTest
     static void scheduleCreatesCronTrigger() {
         entRows  = new List<SObject>();
         consRows = new List<SObject>();

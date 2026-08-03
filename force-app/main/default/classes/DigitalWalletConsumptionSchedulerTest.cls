@@ -40,17 +40,24 @@ public class DigitalWalletConsumptionSchedulerTest {
     }
 
     @IsTest
-    static void executeSendsEmail() {
+    static void executeEnqueuesQueueable() {
         registerStubs();
         Test.startTest();
-        // Exercises execute() -> emailSummary() -> computeConsumption() against stubs.
+        // execute() only enqueues; the enqueued Queueable runs at stopTest() and
+        // exercises emailSummary() -> computeConsumption() against the stubs.
         // Apex suppresses real sends in tests, so assert the path runs cleanly.
-        try {
-            new DigitalWalletConsumptionScheduler().execute(null);
-        } catch (Exception e) {
-            Assert.fail('execute() should not throw: ' + e.getMessage());
-        }
+        new DigitalWalletConsumptionScheduler().execute(null);
         Test.stopTest();
+
+        List<AsyncApexJob> jobs = [
+            SELECT Status, ApexClass.Name
+            FROM AsyncApexJob
+            WHERE JobType = 'Queueable'
+              AND ApexClass.Name = 'DigitalWalletConsumptionEmailQueueable'
+        ];
+        Assert.areEqual(1, jobs.size(), 'execute() should enqueue the email Queueable');
+        Assert.areEqual('Completed', jobs[0].Status,
+            'The enqueued Queueable should run to completion against the stubs');
     }
 
     @IsTest

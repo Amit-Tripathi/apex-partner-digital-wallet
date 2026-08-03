@@ -339,7 +339,9 @@ public with sharing class DigitalWalletUsageSpikeMonitor implements Schedulable 
     // =========================================================================
 
     public void execute(SchedulableContext sc) {
-        emailSpikeAlert(recipients, thresholdPercent);
+        // DMO queries are routed as callouts, which are blocked in Schedulable
+        // context. Enqueue the work so it runs where callouts are permitted.
+        System.enqueueJob(new DigitalWalletUsageSpikeQueueable(recipients, thresholdPercent));
     }
 
     /** Schedules the daily spike check, emailing the running user. Returns CronTrigger Id. */

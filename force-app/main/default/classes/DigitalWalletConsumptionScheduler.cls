@@ -30,7 +30,9 @@ public with sharing class DigitalWalletConsumptionScheduler implements Schedulab
     }
 
     public void execute(SchedulableContext sc) {
-        DigitalWalletConsumptionService.emailSummary(recipients);
+        // DMO queries are routed as callouts, which are blocked in Schedulable
+        // context. Enqueue the work so it runs where callouts are permitted.
+        System.enqueueJob(new DigitalWalletConsumptionEmailQueueable(recipients));
     }
 
     /** Schedules the daily 07:00 email to the running user. Returns the CronTrigger Id. */
