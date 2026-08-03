@@ -1,0 +1,39 @@
+// =============================================================================
+// Digital Wallet - Consumption aggregation type, per card (SUM vs MAX)
+// =============================================================================
+// Source: DigitalWalletConsumptionService.aggTypeForCard()     (per-card probe)
+//         scripts/apex/DigitalWalletConsumption.apex (Step 2)   (grouped scan)
+// Object: TenantDailyEntitlementConsumption__dlm (Data 360 / Data Cloud DMO)
+//
+// WHY THIS MATTERS
+//   Each card's daily rows are recorded as one of two aggregation types, which
+//   decides how "Consumed" must be computed:
+//     SUM -> cumulative drawdown  -> Consumed = SUM(unitsconsumed__c) in term
+//            (see digitalWallet_consumption_sum.soql)
+//     MAX -> point-in-time snapshot (e.g. storage) -> Consumed = latest reading
+//            (see digitalWallet_consumption_maxSnapshot.soql)
+//   A card is provisioned as a single type, so if ANY 'MAX' row exists for a
+//   card it is treated as MAX (otherwise SUM).
+//
+// QUERY A - grouped scan across all cards (no bind variables; runnable as-is).
+//   One row per (card, aggType). If a card appears with aggType = MAX, treat
+//   that card as MAX.
+// =============================================================================
+
+SELECT carddefinitiondevelopername__c card, usageaggregationtype__c aggType
+FROM TenantDailyEntitlementConsumption__dlm
+GROUP BY carddefinitiondevelopername__c, usageaggregationtype__c
+ORDER BY carddefinitiondevelopername__c
+
+
+// =============================================================================
+// QUERY B - single-card MAX probe (mirrors aggTypeForCard() exactly).
+//   Non-empty result => card is MAX; empty => card is SUM.
+//   Replace the placeholder, then select ONLY the lines below and run.
+//
+//   SELECT usageaggregationtype__c
+//   FROM TenantDailyEntitlementConsumption__dlm
+//   WHERE carddefinitiondevelopername__c = 'REPLACE_WITH_CARD_DEVELOPER_NAME'
+//     AND usageaggregationtype__c = 'MAX'
+//   LIMIT 1
+// =============================================================================

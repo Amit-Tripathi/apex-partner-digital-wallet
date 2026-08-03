@@ -1,0 +1,36 @@
+// =============================================================================
+// Digital Wallet - Total Credits + term window, per card (aggregated)
+// =============================================================================
+// Source: scripts/apex/DigitalWalletConsumption.apex (Step 1)
+// Object: TenantEntitlementTransaction__dlm (Data 360 / Data Cloud DMO)
+//
+// WHAT IT RETURNS
+//   One row PER CARD with the numbers the service derives in Apex:
+//     total     = SUM(quantity__c)  -> "Total Credits" (net of Reductions)
+//     termStart = MIN(startdate__c) -> opens the consumption window
+//     termEnd   = MAX(enddate__c)   -> closes the consumption window [start, end)
+//
+//   The Apex classes (DigitalWalletConsumptionService /
+//   DigitalWalletUsageSpikeMonitor) intentionally do the SAME rollup in Apex
+//   from the typed row query (see digitalWallet_entitlements_active.soql)
+//   instead of this aggregate, because typed direct-assignment queries stay
+//   mockable in tests. This aggregate is the fastest way to eyeball the totals.
+//
+// WHY THESE FILTERS  (identical to the active-rows query)
+//   Add/Reduction only; exclude Reparenting; active term (start <= TODAY < end).
+//
+// MANUAL VERIFICATION
+//   No bind variables - runnable as-is. Each card's `total` here should match
+//   the "Total Credits" tile, and [termStart, termEnd) is the window used by
+//   the consumption/spike queries below.
+// =============================================================================
+
+SELECT entitlementcarddefdevlname__c card, SUM(quantity__c) total,
+       MIN(startdate__c) termStart, MAX(enddate__c) termEnd
+FROM TenantEntitlementTransaction__dlm
+WHERE entitlementtransactiontype__c IN ('Add', 'Reduction')
+  AND (entitlementtransactionsubtype__c != 'Reparenting'
+       OR entitlementtransactionsubtype__c = null)
+  AND startdate__c <= TODAY
+  AND enddate__c > TODAY
+GROUP BY entitlementcarddefdevlname__c

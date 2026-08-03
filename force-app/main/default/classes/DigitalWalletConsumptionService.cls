@@ -76,6 +76,18 @@ public with sharing class DigitalWalletConsumptionService {
 
         // Entitlements are few (one row per transaction), so a direct-assignment
         // typed query is safe here and remains mockable via SoqlStubProvider.
+        //
+        // --- Standalone SOQL (manual verification) ---------------------------
+        // No bind variables; runnable as-is in the SOQL runner / Dev Console.
+        // Full runnable copy + explanation: scripts/soql/digitalWallet_entitlements_active.soql
+        //   SELECT entitlementcarddefdevlname__c, quantity__c, startdate__c, enddate__c
+        //   FROM TenantEntitlementTransaction__dlm
+        //   WHERE entitlementtransactiontype__c IN ('Add', 'Reduction')
+        //     AND (entitlementtransactionsubtype__c != 'Reparenting'
+        //          OR entitlementtransactionsubtype__c = null)
+        //     AND startdate__c <= TODAY
+        //     AND enddate__c > TODAY
+        // --------------------------------------------------------------------
         List<TenantEntitlementTransaction__dlm> ents = [
             SELECT entitlementcarddefdevlname__c, quantity__c, startdate__c, enddate__c
             FROM TenantEntitlementTransaction__dlm
@@ -133,6 +145,17 @@ public with sharing class DigitalWalletConsumptionService {
         if (aggTypeOverride != null && aggTypeOverride.containsKey(card)) {
             return aggTypeOverride.get(card);
         }
+        // --- Standalone SOQL (manual verification) ---------------------------
+        // Non-empty result => card is MAX; empty => card is SUM.
+        // Replace the bind variable with a literal:
+        //   :card -> 'REPLACE_WITH_CARD_DEVELOPER_NAME'
+        // Full runnable copy + explanation: scripts/soql/digitalWallet_aggregationType.soql
+        //   SELECT usageaggregationtype__c
+        //   FROM TenantDailyEntitlementConsumption__dlm
+        //   WHERE carddefinitiondevelopername__c = 'REPLACE_WITH_CARD_DEVELOPER_NAME'
+        //     AND usageaggregationtype__c = 'MAX'
+        //   LIMIT 1
+        // --------------------------------------------------------------------
         List<TenantDailyEntitlementConsumption__dlm> maxProbe = [
             SELECT usageaggregationtype__c
             FROM TenantDailyEntitlementConsumption__dlm
@@ -164,6 +187,18 @@ public with sharing class DigitalWalletConsumptionService {
         if (sumConsumedOverride != null && sumConsumedOverride.containsKey(card)) {
             return sumConsumedOverride.get(card);
         }
+        // --- Standalone SOQL (manual verification) ---------------------------
+        // Replace bind variables with literals (window is half-open [tStart, tEnd)):
+        //   :card   -> 'REPLACE_WITH_CARD_DEVELOPER_NAME'
+        //   :tStart -> card's MIN(startdate__c), e.g. 2026-01-01T00:00:00Z
+        //   :tEnd   -> card's MAX(enddate__c),   e.g. 2027-01-01T00:00:00Z
+        // Full runnable copy + explanation: scripts/soql/digitalWallet_consumption_sum.soql
+        //   SELECT SUM(unitsconsumed__c) consumed
+        //   FROM TenantDailyEntitlementConsumption__dlm
+        //   WHERE carddefinitiondevelopername__c = 'REPLACE_WITH_CARD_DEVELOPER_NAME'
+        //     AND utilizationdate__c >= 2026-01-01T00:00:00Z
+        //     AND utilizationdate__c <  2027-01-01T00:00:00Z
+        // --------------------------------------------------------------------
         AggregateResult[] rs = [
             SELECT SUM(unitsconsumed__c) consumed
             FROM TenantDailyEntitlementConsumption__dlm
@@ -182,6 +217,24 @@ public with sharing class DigitalWalletConsumptionService {
      */
     @TestVisible
     static Decimal maxSnapshotForCard(String card, Datetime tStart, Datetime tEnd) {
+        // --- Standalone SOQL (manual verification) ---------------------------
+        // Two queries: A = latest Production snapshot; B = fallback (any env),
+        // used only when A returns no rows. Replace bind variables with literals:
+        //   :card   -> 'REPLACE_WITH_CARD_DEVELOPER_NAME'
+        //   :tStart -> card's MIN(startdate__c), e.g. 2026-01-01T00:00:00Z
+        //   :tEnd   -> card's MAX(enddate__c),   e.g. 2027-01-01T00:00:00Z
+        // Full runnable copies + explanation: scripts/soql/digitalWallet_consumption_maxSnapshot.soql
+        //   -- A (Production):
+        //   SELECT unitsconsumed__c
+        //   FROM TenantDailyEntitlementConsumption__dlm
+        //   WHERE carddefinitiondevelopername__c = 'REPLACE_WITH_CARD_DEVELOPER_NAME'
+        //     AND Usage_Business_Environment_Type__c = 'Production'
+        //     AND utilizationdate__c >= 2026-01-01T00:00:00Z
+        //     AND utilizationdate__c <  2027-01-01T00:00:00Z
+        //   ORDER BY utilizationdate__c DESC
+        //   LIMIT 1
+        //   -- B (fallback, any environment): drop the Usage_Business_Environment_Type__c filter.
+        // --------------------------------------------------------------------
         List<TenantDailyEntitlementConsumption__dlm> snap = [
             SELECT unitsconsumed__c
             FROM TenantDailyEntitlementConsumption__dlm

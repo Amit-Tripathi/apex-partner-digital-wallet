@@ -1,0 +1,45 @@
+// =============================================================================
+// Digital Wallet - Recent daily usage for a SUM-type card (spike detection)
+// =============================================================================
+// Source: DigitalWalletUsageSpikeMonitor.recentDailyUsage()
+// Object: TenantDailyEntitlementConsumption__dlm (Data 360 / Data Cloud DMO)
+//
+// WHAT IT RETURNS
+//   The most recent daily usage rows for ONE card, newest first. In Apex these
+//   are bucketed per day (summed across environment rows), then the latest day
+//   is compared against the trailing MEDIAN of the preceding `baselineDays`
+//   (default 7) days. A spike is flagged when the latest day is more than
+//   `thresholdPercent` (default 10%) above that trailing median.
+//
+// WHY THESE FILTERS
+//   usageaggregationtype__c != 'MAX'
+//       -> spike detection applies only to SUM-type cards. MAX rows are
+//          cumulative snapshots, not daily incremental usage, so they are
+//          excluded (a rising snapshot is not a usage spike).
+//   utilizationdate__c >= :tStart AND < :tEnd
+//       -> scope to the card's active term window [start, end).
+//   ORDER BY utilizationdate__c DESC + LIMIT :recentRowLimit (default 200)
+//       -> a bounded, date-descending page keeps us well under the DMO
+//          direct-assignment row cap while still spanning many days (only a
+//          few environment rows exist per day).
+//
+// BIND VARIABLES -> LITERALS  (:card, :tStart, :tEnd, :recentRowLimit)
+//   :card           -> 'REPLACE_WITH_CARD_DEVELOPER_NAME'
+//   :tStart         -> card's MIN(startdate__c) (inclusive)
+//   :tEnd           -> card's MAX(enddate__c)   (EXCLUSIVE)
+//   :recentRowLimit -> 200 (default)
+//   Source tStart / tEnd from digitalWallet_entitlements_totalsAndTerm.soql.
+//
+// MANUAL VERIFICATION
+//   Replace placeholders and run. Group the rows by day yourself and confirm
+//   the latest day vs the median of the prior days matches an expected spike.
+// =============================================================================
+
+SELECT unitsconsumed__c, utilizationdate__c
+FROM TenantDailyEntitlementConsumption__dlm
+WHERE carddefinitiondevelopername__c = 'REPLACE_WITH_CARD_DEVELOPER_NAME'
+  AND usageaggregationtype__c != 'MAX'
+  AND utilizationdate__c >= 2026-01-01T00:00:00Z
+  AND utilizationdate__c <  2027-01-01T00:00:00Z
+ORDER BY utilizationdate__c DESC
+LIMIT 200

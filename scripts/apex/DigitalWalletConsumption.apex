@@ -23,6 +23,16 @@
  *
  * Run:
  *   sf apex run --file scripts/apex/DigitalWalletConsumption.apex --target-org <alias>
+ *
+ * Manual verification of the underlying queries:
+ *   Each SOQL below has a standalone, copy/paste-ready counterpart (bind
+ *   variables replaced with literals) plus an explanation in scripts/soql/:
+ *     - digitalWallet_entitlements_active.soql      (raw active entitlement rows)
+ *     - digitalWallet_entitlements_totalsAndTerm.soql (Total Credits + term, per card)
+ *     - digitalWallet_aggregationType.soql          (SUM vs MAX per card)
+ *     - digitalWallet_consumption_sum.soql          (Consumed, SUM-type card)
+ *     - digitalWallet_consumption_maxSnapshot.soql  (Consumed, MAX-type card)
+ *     - digitalWallet_recentDailyUsage.soql         (recent daily usage, spikes)
  */
 
 // Step 1: Active entitlements per card -> Total Credits + that card's own term window.

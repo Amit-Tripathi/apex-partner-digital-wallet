@@ -1,0 +1,48 @@
+// =============================================================================
+// Digital Wallet - Consumed for a MAX-type card (point-in-time snapshot)
+// =============================================================================
+// Source: DigitalWalletConsumptionService.maxSnapshotForCard()
+//         scripts/apex/DigitalWalletConsumption.apex (Step 3, MAX branch)
+// Object: TenantDailyEntitlementConsumption__dlm (Data 360 / Data Cloud DMO)
+//
+// WHAT IT RETURNS
+//   The single most recent reading within the term for ONE card. For MAX-type
+//   cards (e.g. storage), "Consumed" is a point-in-time allocation, not a sum -
+//   so the latest daily snapshot IS the consumed value.
+//
+//   QUERY A prefers the latest PRODUCTION reading (matches the UI).
+//   QUERY B is the fallback used only when A returns nothing: latest reading in
+//   ANY environment within the term.
+//
+// BIND VARIABLES -> LITERALS  (the Apex query uses :card, :tStart, :tEnd)
+//   :card   -> 'REPLACE_WITH_CARD_DEVELOPER_NAME'
+//   :tStart -> card's MIN(startdate__c)  (inclusive)
+//   :tEnd   -> card's MAX(enddate__c)    (EXCLUSIVE)
+//   Source tStart / tEnd from digitalWallet_entitlements_totalsAndTerm.soql.
+//
+// MANUAL VERIFICATION
+//   Replace placeholders and run QUERY A. If it returns no rows, run QUERY B.
+//   unitsconsumed__c of the returned row is "Credits Consumed" for a MAX card.
+// =============================================================================
+
+// ---- QUERY A: latest Production snapshot within the term ----
+SELECT unitsconsumed__c, utilizationdate__c, Usage_Business_Environment_Type__c
+FROM TenantDailyEntitlementConsumption__dlm
+WHERE carddefinitiondevelopername__c = 'REPLACE_WITH_CARD_DEVELOPER_NAME'
+  AND Usage_Business_Environment_Type__c = 'Production'
+  AND utilizationdate__c >= 2026-01-01T00:00:00Z
+  AND utilizationdate__c <  2027-01-01T00:00:00Z
+ORDER BY utilizationdate__c DESC
+LIMIT 1
+
+
+// ---- QUERY B: fallback - latest reading in ANY environment within the term ----
+// (select ONLY the lines below when Query A returns no rows)
+//
+//   SELECT unitsconsumed__c, utilizationdate__c, Usage_Business_Environment_Type__c
+//   FROM TenantDailyEntitlementConsumption__dlm
+//   WHERE carddefinitiondevelopername__c = 'REPLACE_WITH_CARD_DEVELOPER_NAME'
+//     AND utilizationdate__c >= 2026-01-01T00:00:00Z
+//     AND utilizationdate__c <  2027-01-01T00:00:00Z
+//   ORDER BY utilizationdate__c DESC
+//   LIMIT 1

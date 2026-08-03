@@ -1,0 +1,34 @@
+// =============================================================================
+// Digital Wallet - Consumed for a SUM-type card (cumulative drawdown)
+// =============================================================================
+// Source: DigitalWalletConsumptionService.sumConsumedForCard()
+//         scripts/apex/DigitalWalletConsumption.apex (Step 3, SUM branch)
+// Object: TenantDailyEntitlementConsumption__dlm (Data 360 / Data Cloud DMO)
+//
+// WHAT IT RETURNS
+//   A single aggregate: total units consumed by ONE card across its active term.
+//   This is "Credits Consumed" for a SUM-type card. In Apex this is aggregated
+//   AT THE SOURCE (never pulled row-by-row) because the full daily row set
+//   exceeds the DMO direct-assignment row cap ("Inline query has too many rows
+//   for direct assignment").
+//
+// BIND VARIABLES -> LITERALS  (the Apex query uses :card, :tStart, :tEnd)
+//   :card   -> 'REPLACE_WITH_CARD_DEVELOPER_NAME'  (carddefinitiondevelopername__c)
+//   :tStart -> the card's MIN(startdate__c)  (term open, inclusive)
+//   :tEnd   -> the card's MAX(enddate__c)    (term close, EXCLUSIVE)
+//   Get tStart / tEnd from digitalWallet_entitlements_totalsAndTerm.soql, then
+//   paste them below as datetime literals (UTC), e.g. 2026-01-01T00:00:00Z.
+//
+// The window is half-open [tStart, tEnd) so usage from a prior term never
+// counts against the current entitlement.
+//
+// MANUAL VERIFICATION
+//   Replace the 3 placeholders, then run. The `consumed` value should match
+//   "Credits Consumed" on the card for a SUM-type card.
+// =============================================================================
+
+SELECT SUM(unitsconsumed__c) consumed
+FROM TenantDailyEntitlementConsumption__dlm
+WHERE carddefinitiondevelopername__c = 'REPLACE_WITH_CARD_DEVELOPER_NAME'
+  AND utilizationdate__c >= 2026-01-01T00:00:00Z
+  AND utilizationdate__c <  2027-01-01T00:00:00Z

@@ -106,6 +106,17 @@ public with sharing class DigitalWalletUsageSpikeMonitor implements Schedulable 
         Map<String, Datetime> termStartByCard = new Map<String, Datetime>();
         Map<String, Datetime> termEndByCard   = new Map<String, Datetime>();
 
+        // --- Standalone SOQL (manual verification) ---------------------------
+        // No bind variables; runnable as-is in the SOQL runner / Dev Console.
+        // Full runnable copy + explanation: scripts/soql/digitalWallet_entitlements_active.soql
+        //   SELECT entitlementcarddefdevlname__c, startdate__c, enddate__c
+        //   FROM TenantEntitlementTransaction__dlm
+        //   WHERE entitlementtransactiontype__c IN ('Add', 'Reduction')
+        //     AND (entitlementtransactionsubtype__c != 'Reparenting'
+        //          OR entitlementtransactionsubtype__c = null)
+        //     AND startdate__c <= TODAY
+        //     AND enddate__c > TODAY
+        // --------------------------------------------------------------------
         List<TenantEntitlementTransaction__dlm> ents = [
             SELECT entitlementcarddefdevlname__c, startdate__c, enddate__c
             FROM TenantEntitlementTransaction__dlm
@@ -171,6 +182,23 @@ public with sharing class DigitalWalletUsageSpikeMonitor implements Schedulable 
         if (usageOverride != null && usageOverride.containsKey(card)) {
             return usageOverride.get(card);
         }
+        // --- Standalone SOQL (manual verification) ---------------------------
+        // SUM-type cards only (MAX rows are cumulative snapshots, not usage).
+        // Replace bind variables with literals (window is half-open [tStart, tEnd)):
+        //   :card           -> 'REPLACE_WITH_CARD_DEVELOPER_NAME'
+        //   :tStart         -> card's MIN(startdate__c), e.g. 2026-01-01T00:00:00Z
+        //   :tEnd           -> card's MAX(enddate__c),   e.g. 2027-01-01T00:00:00Z
+        //   :recentRowLimit -> 200 (default)
+        // Full runnable copy + explanation: scripts/soql/digitalWallet_recentDailyUsage.soql
+        //   SELECT unitsconsumed__c, utilizationdate__c
+        //   FROM TenantDailyEntitlementConsumption__dlm
+        //   WHERE carddefinitiondevelopername__c = 'REPLACE_WITH_CARD_DEVELOPER_NAME'
+        //     AND usageaggregationtype__c != 'MAX'
+        //     AND utilizationdate__c >= 2026-01-01T00:00:00Z
+        //     AND utilizationdate__c <  2027-01-01T00:00:00Z
+        //   ORDER BY utilizationdate__c DESC
+        //   LIMIT 200
+        // --------------------------------------------------------------------
         List<TenantDailyEntitlementConsumption__dlm> rows = [
             SELECT unitsconsumed__c, utilizationdate__c
             FROM TenantDailyEntitlementConsumption__dlm

@@ -1,0 +1,41 @@
+// =============================================================================
+// Digital Wallet - Active entitlement transactions (raw rows)
+// =============================================================================
+// Source: DigitalWalletConsumptionService.computeConsumption() (Step 1)
+//         DigitalWalletUsageSpikeMonitor.detectSpikes()        (Step 1)
+// Object: TenantEntitlementTransaction__dlm (Data 360 / Data Cloud DMO)
+//
+// WHAT IT RETURNS
+//   One row per active entitlement transaction. In Apex these rows are folded
+//   into per-card totals + term windows:
+//     * Total Credits    = SUM(quantity__c) per card (Add adds, Reduction nets down)
+//     * Term start (open) = MIN(startdate__c) per card
+//     * Term end  (close) = MAX(enddate__c)  per card
+//
+// WHY THESE FILTERS
+//   entitlementtransactiontype__c IN ('Add','Reduction')
+//       -> only the transaction types that change the credit balance.
+//   entitlementtransactionsubtype__c != 'Reparenting' (OR null)
+//       -> Reparenting rows move credits between parents; they must NOT be
+//          double-counted as new/removed credits.
+//   startdate__c <= TODAY AND enddate__c > TODAY
+//       -> only entitlements whose term is active right now. The window is
+//          half-open [start, end): a term ending TODAY is already expired.
+//
+// MANUAL VERIFICATION
+//   This query uses NO bind variables and is runnable as-is against the
+//   connected Data Cloud org. Compare SUM(quantity__c) grouped by card against
+//   the "Total Credits" shown on the Digital Wallet cards UI.
+//   Run in VS Code: select the query below, then
+//   "SFDX: Execute SOQL Query with Currently Selected Text".
+// =============================================================================
+
+SELECT entitlementcarddefdevlname__c, quantity__c, startdate__c, enddate__c,
+       entitlementtransactiontype__c, entitlementtransactionsubtype__c
+FROM TenantEntitlementTransaction__dlm
+WHERE entitlementtransactiontype__c IN ('Add', 'Reduction')
+  AND (entitlementtransactionsubtype__c != 'Reparenting'
+       OR entitlementtransactionsubtype__c = null)
+  AND startdate__c <= TODAY
+  AND enddate__c > TODAY
+ORDER BY entitlementcarddefdevlname__c
