@@ -5,7 +5,7 @@
       "default": true
     }
   ],
-  "name": "DigitalWalletConsumptionScripts",
+  "name": "apex-partner-digital-wallet",
   "namespace": "",
   "sfdcLoginUrl": "https://login.salesforce.com",
   "sourceApiVersion": "67.0"

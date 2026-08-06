@@ -1,4 +1,4 @@
-# Digital Wallet Consumption Scripts
+# apex-partner-digital-wallet
 
 Salesforce Apex utilities that reproduce the **Partner Digital Wallet** per‑card
 numbers (Total Credits, Consumed, Remaining, % Consumed, % Remaining) directly
@@ -268,7 +268,7 @@ sfdx-project.json                            DX project manifest (API 67.0, defa
 
 ```bash
 git clone <this-repo-url>
-cd DigitalWalletConsumptionScripts
+cd apex-partner-digital-wallet
 sf org login web --alias dw
 ```
 
