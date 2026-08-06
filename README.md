@@ -1,7 +1,7 @@
 # apex-partner-digital-wallet
 
 
-Salesforce Apex utilities that reproduce the **Partner Digital Wallet** per‑card
+Salesforce Apex utilities that reproduce the **Digital Wallet** per‑card
 numbers (Total Credits, Consumed, Remaining, % Consumed, % Remaining) directly
 from **Data 360 (Data Cloud)** Data Model Objects, email a daily summary, and
 raise a day‑over‑day **usage‑spike alert**.
@@ -95,7 +95,7 @@ Both objects are **Data 360 / Data Cloud DMOs** (`__dlm`). They are **read‑onl
 here** and cannot be created via DML (which is why tests mock them — see
 [Testing](#testing)).
 
-For complete object reference documentation, see [Partner Digital Wallet Data Cloud Objects](https://help.salesforce.com/s/articleView?id=xcloud.wallet_view_dlos.htm&type=5).
+For complete object reference documentation, see [Digital Wallet Data Cloud Objects](https://help.salesforce.com/s/articleView?id=xcloud.wallet_view_dlos.htm&type=5).
 
 ### `TenantEntitlementTransaction__dlm` — *entitlements → Total Credits + term*
 
@@ -121,7 +121,7 @@ For complete object reference documentation, see [Partner Digital Wallet Data Cl
 | `usageaggregationtype__c` | `SUM` vs `MAX` classification |
 | `Usage_Business_Environment_Type__c` | prefer `Production` for MAX snapshots |
 
-> ℹ️ **Note:** These Data Cloud DMO field names are standard for Partner Digital
+> ℹ️ **Note:** These Data Cloud DMO field names are standard for Digital
 > Wallet. However, Data Cloud versions or configurations may vary. If field
 > names differ in your org, see [Adapting to your org](#adapting-to-your-org).
 
@@ -266,10 +266,29 @@ sfdx-project.json                            DX project manifest (API 67.0, defa
 
 ### Prerequisites
 
+#### Digital Wallet Requirement
+
+This solution requires **Digital Wallet** to be enabled in your Salesforce org.
+
+**⚠️ Key Limitation:** Digital Wallet is **NOT available in Sandbox environments**. It can only be enabled in Production orgs or Developer Edition orgs connected to production-level Data Cloud.
+
+**How to Enable Digital Wallet:**
+1. Ensure your org has Data Cloud provisioned and configured
+2. Contact Salesforce to enable Digital Wallet for your org
+3. Verify access by checking for the Data Cloud objects listed in [Digital Wallet Data Cloud Objects](https://help.salesforce.com/s/articleView?id=xcloud.wallet_view_dlos.htm&type=5)
+
+**Development Challenges:**
+- **No Sandbox support** means development and testing must occur in production-like environments
+- Consider using a dedicated Developer Edition org for development
+- Use scratch orgs with caution - they may not support Data Cloud DMOs
+- Implement comprehensive unit tests using mocked data (see [Testing](#testing))
+
+#### Other Prerequisites
+
 - **Salesforce CLI** (`sf`) — [install guide](https://developer.salesforce.com/docs/atlas.en-us.sfdx_setup.meta/sfdx_setup/sfdx_setup_install_cli.htm)
-- A **Salesforce org connected to Data 360 (Data Cloud)** that exposes the two
-  DMOs above, and a user with permission to query them.
-- **Deliverability** for Apex email set to *All email* (Setup → Email → Deliverability).
+- A **Salesforce org with Digital Wallet enabled** that exposes the required DMOs
+- **Data Cloud access** with permissions to query `TenantEntitlementTransaction__dlm` and `TenantDailyEntitlementConsumption__dlm`
+- **Deliverability** for Apex email set to *All email* (Setup → Email → Deliverability)
 
 ### 1. Clone & authorize
 
@@ -399,6 +418,9 @@ Integration checklist for adopters:
 
 ## Gotchas & things you might be missing
 
+- **⚠️ Digital Wallet NOT available in Sandbox.** This is the biggest
+  limitation. Development and testing must occur in production orgs or Developer
+  Edition orgs with Data Cloud. See [Prerequisites](#prerequisites) for details.
 - **Data Cloud access & callout limits.** DMO SOQL is a callout under the hood.
   Ensure the running user has Data Cloud query permissions, and be mindful of
   callout limits when scaling to many cards.
