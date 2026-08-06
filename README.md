@@ -178,24 +178,24 @@ The daily consumption email, end to end:
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Cron as Scheduler cron
-    participant Sch as DigitalWalletConsumptionScheduler
-    participant Q as DigitalWalletConsumptionEmailQueueable
-    participant Svc as DigitalWalletConsumptionService
-    participant DC as Data Cloud DMOs
-    participant Mail as Email
+    participant Cron
+    participant Scheduler
+    participant Queueable
+    participant Service
+    participant DataCloud
+    participant Email
 
-    Cron->>Sch: execute at 07:00
-    Sch->>Q: System.enqueueJob
-    Note over Sch,Q: hop out of Schedulable so callouts are allowed
-    Q->>Svc: emailSummary recipients
-    Svc->>DC: active entitlements - Total Credits and term
+    Cron->>Scheduler: execute at 07:00
+    Scheduler->>Queueable: enqueueJob
+    Note over Scheduler,Queueable: Exits Schedulable context for callouts
+    Queueable->>Service: emailSummary
+    Service->>DataCloud: query entitlements
     loop per card
-        Svc->>DC: classify SUM vs MAX
-        Svc->>DC: consumed - SUM within term OR latest MAX snapshot
+        Service->>DataCloud: classify SUM vs MAX
+        Service->>DataCloud: query consumed
     end
-    Svc->>Svc: buildResults and render HTML/text
-    Svc->>Mail: sendEmail summary
+    Service->>Service: buildResults
+    Service->>Email: sendEmail
 ```
 
 The spike path is identical, swapping the monitor/queueable and ending with
