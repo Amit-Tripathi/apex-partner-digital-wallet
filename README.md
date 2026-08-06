@@ -270,7 +270,7 @@ sfdx-project.json                            DX project manifest (API 67.0, defa
 
 This solution requires **Digital Wallet** to be enabled in your Salesforce org.
 
-**⚠️ Key Limitation:** Digital Wallet is **NOT available in Sandbox environments**. It can only be enabled in Production orgs or Developer Edition orgs connected to production-level Data Cloud.
+**⚠️ Key Limitation:** Digital Wallet is **NOT available in Sandbox or Developer Edition environments**. It can only be enabled in **Production orgs** with Data Cloud.
 
 **How to Enable Digital Wallet:**
 1. Ensure your org has Data Cloud provisioned and configured
@@ -278,9 +278,9 @@ This solution requires **Digital Wallet** to be enabled in your Salesforce org.
 3. Verify access by checking for the Data Cloud objects listed in [Digital Wallet Data Cloud Objects](https://help.salesforce.com/s/articleView?id=xcloud.wallet_view_dlos.htm&type=5)
 
 **Development Challenges:**
-- **No Sandbox support** means development and testing must occur in production-like environments
-- Consider using a dedicated Developer Edition org for development
-- Use scratch orgs with caution - they may not support Data Cloud DMOs
+- **No Sandbox or Developer Edition support** means development and testing must occur directly in Production orgs
+- Test thoroughly in a non-critical production environment before deploying to your main production org
+- Use scratch orgs with caution - they typically do not support Data Cloud DMOs
 - Implement comprehensive unit tests using mocked data (see [Testing](#testing))
 
 #### Other Prerequisites
@@ -418,9 +418,9 @@ Integration checklist for adopters:
 
 ## Gotchas & things you might be missing
 
-- **⚠️ Digital Wallet NOT available in Sandbox.** This is the biggest
-  limitation. Development and testing must occur in production orgs or Developer
-  Edition orgs with Data Cloud. See [Prerequisites](#prerequisites) for details.
+- **⚠️ Digital Wallet NOT available in Sandbox or Developer Edition.** This is the biggest
+  limitation. Development and testing must occur directly in Production orgs.
+  See [Prerequisites](#prerequisites) for details.
 - **Data Cloud access & callout limits.** DMO SOQL is a callout under the hood.
   Ensure the running user has Data Cloud query permissions, and be mindful of
   callout limits when scaling to many cards.
