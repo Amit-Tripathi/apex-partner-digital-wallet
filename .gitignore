@@ -46,3 +46,7 @@ $RECYCLE.BIN/
 **/__pycache__/
 **/.venv/
 **/venv/
+
+# Org-specific metadata and comparison reports
+prod-metadata/
+COMPARISON_REPORT.md
