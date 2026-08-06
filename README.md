@@ -137,36 +137,36 @@ real query + email happens there.
 
 ```mermaid
 flowchart TD
-    subgraph SchedCtx["Schedulable context - NO callouts allowed"]
-        S1["DigitalWalletConsumptionScheduler<br/>Schedulable"]
-        S2["DigitalWalletUsageSpikeMonitor<br/>Schedulable"]
+    subgraph SchedCtx[Schedulable context]
+        S1[DigitalWalletConsumptionScheduler]
+        S2[DigitalWalletUsageSpikeMonitor]
     end
 
-    subgraph AsyncCtx["Queueable context - Database.AllowsCallouts"]
-        Q1["DigitalWalletConsumptionEmailQueueable"]
-        Q2["DigitalWalletUsageSpikeQueueable"]
+    subgraph AsyncCtx[Queueable context with AllowsCallouts]
+        Q1[DigitalWalletConsumptionEmailQueueable]
+        Q2[DigitalWalletUsageSpikeQueueable]
     end
 
-    subgraph Logic["Business logic"]
-        SVC["DigitalWalletConsumptionService<br/>computeConsumption and emailSummary"]
-        MON["DigitalWalletUsageSpikeMonitor<br/>detectSpikes and emailSpikeAlert"]
+    subgraph Logic[Business logic]
+        SVC[DigitalWalletConsumptionService]
+        MON[DigitalWalletUsageSpikeMonitor]
     end
 
-    subgraph DataCloud["Data 360 - Data Cloud DMOs"]
-        D1[("TenantEntitlementTransaction__dlm")]
-        D2[("TenantDailyEntitlementConsumption__dlm")]
+    subgraph DataCloud[Data Cloud DMOs]
+        D1[(TenantEntitlementTransaction__dlm)]
+        D2[(TenantDailyEntitlementConsumption__dlm)]
     end
 
-    S1 -->|"System.enqueueJob"| Q1
-    S2 -->|"System.enqueueJob"| Q2
+    S1 -->|System.enqueueJob| Q1
+    S2 -->|System.enqueueJob| Q2
     Q1 --> SVC
     Q2 --> MON
-    SVC -->|"SOQL callout"| D1
-    SVC -->|"SOQL callout"| D2
-    MON -->|"SOQL callout"| D1
-    MON -->|"SOQL callout"| D2
-    SVC -->|"Messaging.sendEmail"| M1["Consumption summary email"]
-    MON -->|"Messaging.sendEmail<br/>only if spikes"| M2["Spike alert email"]
+    SVC -->|SOQL callout| D1
+    SVC -->|SOQL callout| D2
+    MON -->|SOQL callout| D1
+    MON -->|SOQL callout| D2
+    SVC -->|Messaging.sendEmail| M1[Consumption summary email]
+    MON -->|sendEmail if spikes| M2[Spike alert email]
 ```
 
 ---
