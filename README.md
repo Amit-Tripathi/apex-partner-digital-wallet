@@ -95,7 +95,11 @@ Both objects are **Data 360 / Data Cloud DMOs** (`__dlm`). They are **read‑onl
 here** and cannot be created via DML (which is why tests mock them — see
 [Testing](#testing)).
 
+For complete object reference documentation, see [Partner Digital Wallet Data Cloud Objects](https://help.salesforce.com/s/articleView?id=xcloud.wallet_view_dlos.htm&type=5).
+
 ### `TenantEntitlementTransaction__dlm` — *entitlements → Total Credits + term*
+
+**[Official Documentation](https://help.salesforce.com/s/articleView?id=xcloud.wallet_tet_reference.htm&type=5)**
 
 | Field | Used for |
 | --- | --- |
@@ -106,6 +110,8 @@ here** and cannot be created via DML (which is why tests mock them — see
 | `entitlementtransactionsubtype__c` | exclude `Reparenting` (avoids double counting) |
 
 ### `TenantDailyEntitlementConsumption__dlm` — *daily consumption*
+
+**[Official Documentation](https://help.salesforce.com/s/articleView?id=xcloud.wallet_teue_reference.htm&type=5)**
 
 | Field | Used for |
 | --- | --- |
