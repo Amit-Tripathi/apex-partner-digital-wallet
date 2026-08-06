@@ -115,9 +115,9 @@ here** and cannot be created via DML (which is why tests mock them — see
 | `usageaggregationtype__c` | `SUM` vs `MAX` classification |
 | `Usage_Business_Environment_Type__c` | prefer `Production` for MAX snapshots |
 
-> ⚠️ **Field API names are org‑specific.** The names above match the source org
-> this was built against. If your DMOs differ, see
-> [Adapting to your org](#adapting-to-your-org).
+> ℹ️ **Note:** These Data Cloud DMO field names are standard for Partner Digital
+> Wallet. However, Data Cloud versions or configurations may vary. If field
+> names differ in your org, see [Adapting to your org](#adapting-to-your-org).
 
 ---
 
@@ -131,36 +131,36 @@ real query + email happens there.
 
 ```mermaid
 flowchart TD
-    subgraph SchedCtx["Schedulable context (NO callouts allowed)"]
-        S1["DigitalWalletConsumptionScheduler\n(Schedulable)"]
-        S2["DigitalWalletUsageSpikeMonitor\n(Schedulable)"]
+    subgraph SchedCtx["Schedulable context - NO callouts allowed"]
+        S1["DigitalWalletConsumptionScheduler<br/>Schedulable"]
+        S2["DigitalWalletUsageSpikeMonitor<br/>Schedulable"]
     end
 
-    subgraph AsyncCtx["Queueable context (Database.AllowsCallouts)"]
+    subgraph AsyncCtx["Queueable context - Database.AllowsCallouts"]
         Q1["DigitalWalletConsumptionEmailQueueable"]
         Q2["DigitalWalletUsageSpikeQueueable"]
     end
 
     subgraph Logic["Business logic"]
-        SVC["DigitalWalletConsumptionService\ncomputeConsumption() / emailSummary()"]
-        MON["DigitalWalletUsageSpikeMonitor\ndetectSpikes() / emailSpikeAlert()"]
+        SVC["DigitalWalletConsumptionService<br/>computeConsumption and emailSummary"]
+        MON["DigitalWalletUsageSpikeMonitor<br/>detectSpikes and emailSpikeAlert"]
     end
 
-    subgraph DataCloud["Data 360 (Data Cloud) DMOs"]
+    subgraph DataCloud["Data 360 - Data Cloud DMOs"]
         D1[("TenantEntitlementTransaction__dlm")]
         D2[("TenantDailyEntitlementConsumption__dlm")]
     end
 
-    S1 -- "System.enqueueJob" --> Q1
-    S2 -- "System.enqueueJob" --> Q2
+    S1 -->|"System.enqueueJob"| Q1
+    S2 -->|"System.enqueueJob"| Q2
     Q1 --> SVC
     Q2 --> MON
-    SVC -- "SOQL (callout)" --> D1
-    SVC -- "SOQL (callout)" --> D2
-    MON -- "SOQL (callout)" --> D1
-    MON -- "SOQL (callout)" --> D2
-    SVC -- "Messaging.sendEmail" --> M1["📧 Consumption summary"]
-    MON -- "Messaging.sendEmail\n(only if spikes)" --> M2["📧 Spike alert"]
+    SVC -->|"SOQL callout"| D1
+    SVC -->|"SOQL callout"| D2
+    MON -->|"SOQL callout"| D1
+    MON -->|"SOQL callout"| D2
+    SVC -->|"Messaging.sendEmail"| M1["Consumption summary email"]
+    MON -->|"Messaging.sendEmail<br/>only if spikes"| M2["Spike alert email"]
 ```
 
 ---
@@ -172,24 +172,24 @@ The daily consumption email, end to end:
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Cron as Scheduler (cron)
+    participant Cron as Scheduler cron
     participant Sch as DigitalWalletConsumptionScheduler
     participant Q as DigitalWalletConsumptionEmailQueueable
     participant Svc as DigitalWalletConsumptionService
     participant DC as Data Cloud DMOs
     participant Mail as Email
 
-    Cron->>Sch: execute() at 07:00
-    Sch->>Q: System.enqueueJob(...)
+    Cron->>Sch: execute at 07:00
+    Sch->>Q: System.enqueueJob
     Note over Sch,Q: hop out of Schedulable so callouts are allowed
-    Q->>Svc: emailSummary(recipients)
-    Svc->>DC: active entitlements (Total Credits + term)
+    Q->>Svc: emailSummary recipients
+    Svc->>DC: active entitlements - Total Credits and term
     loop per card
         Svc->>DC: classify SUM vs MAX
-        Svc->>DC: consumed (SUM within term OR latest MAX snapshot)
+        Svc->>DC: consumed - SUM within term OR latest MAX snapshot
     end
-    Svc->>Svc: buildResults() + render HTML/text
-    Svc->>Mail: sendEmail(summary)
+    Svc->>Svc: buildResults and render HTML/text
+    Svc->>Mail: sendEmail summary
 ```
 
 The spike path is identical, swapping the monitor/queueable and ending with
@@ -377,13 +377,12 @@ Per‑call overrides exist too, e.g. `detectSpikes(15)` or
 
 ## Adapting to your org
 
-This is the main integration work for adopters:
+Integration checklist for adopters:
 
-1. **Map the DMO field API names** to yours. Search the classes and
-   `scripts/soql/` for the field names in
-   [Data model](#data-model-objects--fields) and rename to match your DMOs.
-   (Note the mixed conventions — e.g. `unitsconsumed__c` vs
-   `Usage_Business_Environment_Type__c` — which reflect the source org.)
+1. **Verify DMO field API names** match your org. These are standard Data Cloud
+   fields, but verify the names in [Data model](#data-model-objects--fields)
+   match your DMOs. If they differ, search the classes and `scripts/soql/` to
+   update field references.
 2. **Confirm the transaction type/subtype vocabulary** (`Add`, `Reduction`,
    `Reparenting`) matches your data; adjust the `WHERE` clauses if not.
 3. **Confirm the aggregation‑type values** (`SUM` / `MAX`) and the environment
